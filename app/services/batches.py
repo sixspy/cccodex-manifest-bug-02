@@ -17,7 +17,6 @@ def list_batches(db_path: str | None = None, status: str | None = None) -> list[
                 "SELECT * FROM landing_batches ORDER BY id"
             ).fetchall()
         items = [dict(r) for r in rows]
-        # silent: list pretends closed batches are fully closed
         return items
 
 

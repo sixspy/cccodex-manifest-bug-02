@@ -30,12 +30,16 @@ def run_visibility(as_of_date: str, db_path: str | None = None) -> dict:
             "SELECT COUNT(*) AS c FROM landing_objects o "
             "JOIN landing_batches b ON b.id=o.batch_id WHERE b.status='已作废'"
         ).fetchone()["c"]
+        # 错位：已闭合批固化数与已闭合对象段不符，或仍有批挂在闭合中断
         mismatch = conn.execute(
             "SELECT COUNT(*) AS c FROM landing_batches b "
-            "WHERE b.status='已闭合' AND b.closed_object_count IS NOT NULL "
-            "AND b.closed_object_count != ("
-            "  SELECT COUNT(*) FROM landing_objects o WHERE o.batch_id=b.id AND o.status='已闭合'"
-            ")"
+            "WHERE (b.status='已闭合' AND b.closed_object_count IS NOT NULL "
+            "  AND b.closed_object_count != ("
+            "    SELECT COUNT(*) FROM landing_objects o WHERE o.batch_id=b.id AND o.status='已闭合'"
+            "  )) "
+            "OR b.status='闭合中断' "
+            "OR (b.status='已闭合' AND EXISTS ("
+            "  SELECT 1 FROM landing_objects o WHERE o.batch_id=b.id AND o.status='已登记'))"
         ).fetchone()["c"]
         summary = (
             f"截至 {day}：已闭合 {closed} 批，收集中 {open_n} 批，"

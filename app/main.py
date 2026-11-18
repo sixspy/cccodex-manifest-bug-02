@@ -8,15 +8,18 @@ from litestar.static_files import create_static_files_router
 from litestar.status_codes import HTTP_302_FOUND
 
 from app.config import Config
-from app.db import init_db
+from app.db import get_db, init_db
 from app.services import (
     close_batch,
     get_batch,
     list_batches,
     list_objects,
     list_reports,
+    list_scan_runs,
+    reconcile_batch,
     register_object,
     run_visibility,
+    scan_directory,
 )
 from app.services.objects import ServiceError
 
@@ -126,7 +129,33 @@ async def api_batch_detail(request: Request, batch_id: int) -> dict:
     batch = get_batch(batch_id)
     if not batch:
         raise HTTPException(status_code=404, detail="批次不存在")
-    return {"batch": batch, "objects": list_objects(batch_id)}
+    return {
+        "batch": batch,
+        "objects": list_objects(batch_id),
+        "reconcile": reconcile_batch(batch_id),
+    }
+
+
+@get("/api/batches/{batch_id:int}/reconcile")
+async def api_reconcile(request: Request, batch_id: int) -> dict:
+    require_user(request)
+    state = reconcile_batch(batch_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="批次不存在")
+    return state
+
+
+@get("/api/batches/{batch_id:int}/close-runs")
+async def api_close_runs(request: Request, batch_id: int) -> dict:
+    require_user(request)
+    if not get_batch(batch_id):
+        raise HTTPException(status_code=404, detail="批次不存在")
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM close_runs WHERE batch_id=? ORDER BY id DESC",
+            (batch_id,),
+        ).fetchall()
+    return {"items": [dict(r) for r in rows]}
 
 
 @post("/api/batches/{batch_id:int}/objects")
@@ -165,10 +194,35 @@ async def api_close(request: Request, batch_id: int) -> Response:
             media_type="application/json",
         )
     return Response(
-        content={"ok": True, "run": run},
+        content={"ok": True, "run": run, "reconcile": reconcile_batch(batch_id)},
         status_code=200,
         media_type="application/json",
     )
+
+
+@post("/api/batches/{batch_id:int}/scan")
+async def api_scan(request: Request, batch_id: int) -> Response:
+    require_user(request)
+    body = await request.json()
+    try:
+        run = scan_directory(batch_id, str(body.get("rel_dir", "") or ""))
+    except ServiceError as exc:
+        return Response(
+            content={"ok": False, "error": exc.message},
+            status_code=exc.status_code,
+            media_type="application/json",
+        )
+    return Response(
+        content={"ok": True, "scan_run": run, "reconcile": reconcile_batch(batch_id)},
+        status_code=200,
+        media_type="application/json",
+    )
+
+
+@get("/api/scan-runs")
+async def api_scan_runs(request: Request) -> dict:
+    require_user(request)
+    return {"items": list_scan_runs()}
 
 
 @get("/api/visibility-reports")
@@ -199,8 +253,12 @@ app = Litestar(
         api_meta,
         api_batches,
         api_batch_detail,
+        api_reconcile,
+        api_close_runs,
         api_register,
         api_close,
+        api_scan,
+        api_scan_runs,
         api_reports,
         api_run_report,
         create_static_files_router(path="/static", directories=[str(STATIC)]),
